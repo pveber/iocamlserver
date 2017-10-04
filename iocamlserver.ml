@@ -191,11 +191,11 @@ let kernel_id_json ~kernel_guid ~address ~ws_port =
         ])
 
 let not_found () = 
-    lwt () = if !verbose > 0 then Lwt_io.eprintf "Not_found\n" else return () in
+    let%lwt () = if !verbose > 0 then Lwt_io.eprintf "Not_found\n" else return () in
     Server.respond_not_found ()
  
 let notebook_list notebook_path = 
-    lwt l = Files.list_notebooks notebook_path in
+    let%lwt l = Files.list_notebooks notebook_path in
     let open Yojson.Basic in
     let json nb =
         let notebook_guid = Kernel.M.notebook_guid_of_filename nb in
@@ -213,12 +213,12 @@ let notebook_list notebook_path =
 
 (* read notebook from file *)
 let send_notebook guid = 
-    (try_lwt
-        lwt name = 
+    (try%lwt
+        let%lwt name = 
             try return (Kernel.M.filename_of_notebook_guid guid) 
             with _ -> fail (Failure "bad_file") 
         in 
-        lwt notebook = 
+        let%lwt notebook = 
             Lwt_io.(with_file ~mode:input (filename (name ^ ".ipynb")) read) 
         in
         Kernel.M.dump_state !verbose;
@@ -227,7 +227,7 @@ let send_notebook guid =
         not_found ())
 
 let register_notebooks notebook_path = 
-    lwt l = Files.list_notebooks notebook_path in
+    let%lwt l = Files.list_notebooks notebook_path in
     Lwt_list.iter_s 
         (fun nb -> return (ignore (Kernel.M.notebook_guid_of_filename nb))) l
 
@@ -243,7 +243,7 @@ let serve_from uri path next =
   if path <> "" then
     let fname = Server.resolve_file ~docroot:path ~uri:uri in
     if Sys.file_exists fname then
-      lwt () =
+      let%lwt () =
         if !verbose > 0 then Lwt_io.eprintf "  [  STATIC]: %s [%s] [%s]\n" fname path (Uri.path uri)
         else return ()
       in
@@ -261,7 +261,7 @@ let serve_static_files uri =
     | `js_kernel(path, _) -> serve_from path (fun () -> serve_crunched_files uri)
     | `js_kernel_file(fname) -> (* XXX this wont serve the custom icon I think XXX not hugely important, but to be fixed! *)
       if Uri.path uri = "/static/services/kernels/js/kernel.js" then begin
-        lwt () = 
+        let%lwt () = 
           if !verbose > 0 then 
             Lwt_io.eprintf "  [JSKERNEL]: %s [%s]\n" fname (Uri.path uri) 
             else return ()
@@ -272,9 +272,9 @@ let serve_static_files uri =
 
 let save_notebook guid body = 
     let old_filename = Kernel.M.filename_of_notebook_guid guid in
-    (*lwt new_filename = get_filename_of_ipynb body in*)
+    (*let%lwt new_filename = get_filename_of_ipynb body in*)
     let new_filename, body = Files.prepare_ipynb_for_saving !no_split_lines body in
-    lwt () = Lwt_io.(with_file ~mode:output 
+    let%lwt () = Lwt_io.(with_file ~mode:output 
         (filename (new_filename ^ ".ipynb"))
         (fun f -> write f body))
     in
@@ -294,8 +294,8 @@ let http_server address port ws_port notebook_path =
         let meth = Request.meth req in
         let path = Uri.path uri in
 
-        lwt decode = decode path in
-        lwt ()  = 
+        let%lwt decode = decode path in
+        let%lwt ()  = 
             (* XXX log all messages that are not just serving notebook files *)
             if (!verbose > 0 && decode <> `Static) || (!verbose > 1) then 
                 Lwt_io.eprintf "%s [%8s]: [%s] %s -> %s\n%!" 
@@ -323,7 +323,7 @@ let http_server address port ws_port notebook_path =
             serve_static_files uri
 
         | `File(fname) ->
-            lwt () = 
+            let%lwt () = 
                 if !verbose > 0 then Lwt_io.eprintf "  [    DATA] %s\n" fname
                 else return ()
             in
@@ -340,8 +340,8 @@ let http_server address port ws_port notebook_path =
 
         | `Root_new -> 
             (* create new .ipynb file *)
-            lwt name = Files.(list_notebooks notebook_path >>= new_notebook_name) in
-            lwt () = Lwt_io.(with_file ~mode:output 
+            let%lwt name = Files.(list_notebooks notebook_path >>= new_notebook_name) in
+            let%lwt () = Lwt_io.(with_file ~mode:output 
                 (filename (name ^ ".ipynb")) 
                 (fun f -> write f (Files.empty_notebook name)))
             in
@@ -350,7 +350,7 @@ let http_server address port ws_port notebook_path =
             Server.respond_string ~status:`Found ~headers:(header_redirect guid) ~body:"" ()
 
         | `Root_name(name) ->
-            (try_lwt 
+            (try%lwt 
                 Server.respond_string ~status:`Found 
                     ~headers:(header_redirect (Kernel.M.notebook_guid_of_filename name)) 
                     ~body:"" ()
@@ -362,13 +362,13 @@ let http_server address port ws_port notebook_path =
         | `Notebooks -> notebook_list notebook_path
 
         | `Notebooks_guid(guid) when meth = `GET ->
-            (try_lwt
+            (try%lwt
                 (* read notebook from file *)
-                lwt name = 
+                let%lwt name = 
                     try return (Kernel.M.filename_of_notebook_guid guid) 
                     with _ -> fail (Failure "bad_file") 
                 in 
-                lwt notebook = Files.load_ipynb_for_serving filename name in
+                let%lwt notebook = Files.load_ipynb_for_serving filename name in
                 Kernel.M.dump_state !verbose;
                 Server.respond_string ~status:`OK ~body:notebook ()
             with _ -> 
@@ -376,8 +376,8 @@ let http_server address port ws_port notebook_path =
             
         | `Notebooks_guid(guid) when meth = `PUT -> 
             (* save notebook *)
-            (try_lwt
-                lwt body = Cohttp_lwt_body.to_string body in
+            (try%lwt
+                let%lwt body = Cohttp_lwt_body.to_string body in
                 Kernel.M.dump_state !verbose;
                 save_notebook guid body           
             with _ -> 
@@ -392,9 +392,9 @@ let http_server address port ws_port notebook_path =
             Server.respond_string ~status:`OK ~body:"[]" ()
 
         | `Kernels when meth = `POST -> 
-            (try_lwt
-                lwt notebook_guid = query_param "notebook" in 
-                lwt kernel = Kernel.get_kernel
+            (try%lwt
+                let%lwt notebook_guid = query_param "notebook" in 
+                let%lwt kernel = Kernel.get_kernel
                     ~zmq ~path:notebook_path ~notebook_guid ~ip_addr:address
                 in
                 Kernel.M.dump_state !verbose;
@@ -409,12 +409,12 @@ let http_server address port ws_port notebook_path =
             Server.respond_string ~status:`OK ~body:"" ()
 
         | `Kernels_restart(guid) ->
-            (try_lwt
+            (try%lwt
                 (* stop kernel *) 
                 let () = Kernel.close_kernel guid in
                 (* re-start kernel *)
                 let notebook_guid = Kernel.M.notebook_guid_of_kernel_guid guid in
-                lwt kernel = Kernel.get_kernel
+                let%lwt kernel = Kernel.get_kernel
                     ~zmq ~path:notebook_path ~notebook_guid ~ip_addr:address
                 in
                 Kernel.M.dump_state !verbose;
@@ -437,22 +437,22 @@ let http_server address port ws_port notebook_path =
     let config = { Server.callback; conn_closed } in
     Server.create ~address ~port config*)
     let conn_closed (_,_) = () in
-    lwt ctx = Conduit_lwt_unix.init ~src:address () in
+    let%lwt ctx = Conduit_lwt_unix.init ~src:address () in
     let ctx = Cohttp_lwt_unix_net.init ~ctx () in
     let mode = `TCP (`Port port) in
     let config = Cohttp_lwt_unix.Server.make ~callback ~conn_closed () in
     Cohttp_lwt_unix.Server.create ~ctx ~mode config
 
 let run_servers address notebook_path = 
-    lwt () = register_notebooks notebook_path in
+    let%lwt () = register_notebooks notebook_path in
 
     (* find ports for http and websocket servers *)
     let rec find_port_pair port = 
-        lwt ok = Kernel.n_ports_available address port 2 in
+        let%lwt ok = Kernel.n_ports_available address port 2 in
         if ok then return port
         else find_port_pair (port+2)
     in
-    lwt http_port = find_port_pair 8888 in
+    let%lwt http_port = find_port_pair 8888 in
     let ws_port = http_port + 1 in
     let () = Printf.printf "[iocaml] listening on %s:%d\n%!" address http_port in
     (*if !verbose > 0 then begin
@@ -499,7 +499,7 @@ let run_iocaml_server () =
     Sys.catch_break true;
     try 
         (*at_exit close_kernels;*)
-        Lwt_unix.run (run_servers !address notebook_path)
+        Lwt_main.run (run_servers !address notebook_path)
     with
     | Sys.Break -> begin
         close_kernels ();
@@ -510,7 +510,7 @@ let () =
   if !static_site_path = "" then 
     run_iocaml_server ()
   else 
-    Lwt_unix.run 
+    Lwt_main.run 
       (Files.create_static_site 
         ~to_dir:!static_site_path
         ~notebook_path ~notebook_filename:file_to_open

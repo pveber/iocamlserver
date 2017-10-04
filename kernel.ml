@@ -151,26 +151,28 @@ let resolve_addr addr port =
  * XXX not sure about this *)
 let port_available addr port = 
     let s = Lwt_unix.(socket PF_INET SOCK_STREAM 0) in
-    lwt status = 
-        try_lwt
-            Lwt_unix.(bind s (resolve_addr addr port));
+    let%lwt status = 
+        try%lwt
+          let%lwt () = Lwt_unix.(bind s (resolve_addr addr port)) in
+          (* FIXME(pveber): previous version would not wait for the
+             bind to finish, but that seems wrong to me*)
             Lwt.return true
         with _ ->
             Lwt.return false
     in
-    lwt () = Lwt_unix.close s in
+    let%lwt () = Lwt_unix.close s in
     Lwt.return status
 
 let rec n_ports_available addr port n = 
     if n=0 then Lwt.return true
     else
-        lwt available = port_available addr port in
+        let%lwt available = port_available addr port in
         if available then n_ports_available addr (port+1) (n-1)
         else Lwt.return false
 
 let rec find_zmq_port_range addr = 
     let port = Random.int 40000 + 20000 in (* between 20,000 + 60,000 *)
-    lwt available = n_ports_available addr port 5 in
+    let%lwt available = n_ports_available addr port 5 in
     if available then Lwt.return port
     else find_zmq_port_range addr
 
@@ -212,7 +214,7 @@ let start_kernel
     let kernel_guid = M.kernel_guid_of_notebook_guid notebook_guid in
     
     (* find free ports *)
-    lwt p = find_zmq_port_range ip_addr in
+    let%lwt p = find_zmq_port_range ip_addr in
     let zmq_shell_port = p+0 in
     let zmq_iopub_port = p+1 in
     let zmq_control_port= p+2 in

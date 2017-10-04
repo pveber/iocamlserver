@@ -10,8 +10,8 @@
 open Lwt
 open Iocaml_zmq
 
-type ws_stream = Websocket_lwt.Frame.t Lwt_stream.t
-type ws_push = Websocket_lwt.Frame.t -> unit Lwt.t
+type ws_stream = Websocket.Frame.t Lwt_stream.t
+type ws_push = Websocket.Frame.t -> unit Lwt.t
 type ws_comm = ws_stream * ws_push 
 
 let zmq_of_ws_message data = 
@@ -52,47 +52,49 @@ let ws_of_zmq_message data =
         ])
 
 let ws_to_zmq verbose name stream socket = 
-    lwt frame = Lwt_stream.next stream in
-    let data = frame.Websocket_lwt.Frame.content in
-    lwt () = 
+    let%lwt frame = Lwt_stream.next stream in
+    let data = frame.Websocket.Frame.content in
+    let%lwt () = 
         if verbose > 1 then Lwt_io.eprintf "[ws->zmq]%s: %s\n" name data 
         else return ()
     in
-    try_lwt Lwt_zmq.Socket.send_all socket (zmq_of_ws_message data)
+    try%lwt Lwt_zmq.Socket.send_all socket (zmq_of_ws_message data)
     with _ -> return ()
 
 let zmq_to_ws verbose name socket push = 
-    lwt frames = Lwt_zmq.Socket.recv_all socket in
-    lwt () = 
+    let%lwt frames = Lwt_zmq.Socket.recv_all socket in
+    let%lwt () = 
         if verbose > 1 then Lwt_list.iter_s (Lwt_io.eprintf "[zmq->ws]%s: %s\n" name) frames 
         else return ()
     in
-    try_lwt
+    try%lwt
         let frame = ws_of_zmq_message frames in
-        push (Websocket_lwt.Frame.create ~content:frame ())
+        push (Websocket.Frame.create ~content:frame ())
     with _ -> return ()
 
 let rec ws_zmq_comms verbose name socket uri (stream,push) = 
-    lwt _ = zmq_to_ws verbose name socket push <?> ws_to_zmq verbose name stream socket in
+    let%lwt _ = zmq_to_ws verbose name socket push <?> ws_to_zmq verbose name stream socket in
     ws_zmq_comms verbose name socket uri (stream,push)
 
-let ws_init verbose id req recv send = 
-  let open Websocket_lwt in
+let ws_init verbose client (* id req recv send *) = 
+  let open Websocket in
   let open Kernel in
-  try_lwt
-    recv () >>= fun cookie ->
+  let recv () = Websocket_lwt.Connected_client.recv client in
+  let send = Websocket_lwt.Connected_client.send client in
+  try%lwt
+    Websocket_lwt.Connected_client.recv client >>= fun cookie ->
       (* we get one special message per channel, after which it's comms time *)
       let cookie = cookie.Frame.content in
-      lwt () = if verbose > 1 then Lwt_io.eprintf "cookie:[%i] %s\n" (String.length cookie) cookie else return () in
+      let%lwt () = if verbose > 1 then Lwt_io.eprintf "cookie:[%i] %s\n" (String.length cookie) cookie else return () in
       (* parse the uri to find out which socket we want *)
       let get guid = 
           match M.kernel_of_kernel_guid guid with
           | None -> fail (Failure ("cant find kernel: " ^ guid))
           | Some(x) -> return x
       in
-      let uri = Cohttp.Request.uri req in
+      let uri = Cohttp.Request.uri (Websocket_lwt.Connected_client.http_request client) in
       let stream = Websocket_lwt.mk_frame_stream recv in
-      match_lwt Uri_paths.decode_ws (Uri.path uri) with
+      match%lwt Uri_paths.decode_ws (Uri.path uri) with
       | `Ws_shell(guid) -> 
           get guid >>= fun k -> ws_zmq_comms verbose "shell" (k.shell()) uri (stream,send)
       | `Ws_stdin(guid) ->                                      
@@ -104,7 +106,7 @@ let ws_init verbose id req recv send =
 
   with 
   | x ->
-    lwt () = 
+    let%lwt () = 
       if verbose > 0 then Lwt_io.eprintf "ws_init failed with %s\n" (Printexc.to_string x)
       else return ()
     in
